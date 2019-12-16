@@ -108,7 +108,7 @@ class Pix2PixHDModel(BaseModel):
             params = list(self.netD.parameters())    
             self.optimizer_D = torch.optim.Adam(params, lr=opt.lr, betas=(opt.beta1, 0.999))
 
-    def encode_input(self, label_map, inst_map=None, real_image=None, feat_map=None, infer=False):             
+    def encode_input(self, label_map, inst_map=None, real_image=None, feat_map=None, mask = None, infer=False):             
         if self.opt.label_nc == 0:
             input_label = label_map.data.cuda()
         else:
@@ -139,6 +139,10 @@ class Pix2PixHDModel(BaseModel):
             if self.opt.label_feat:
                 inst_map = label_map.cuda()
 
+        # Apply mask to real image
+        if self.opt.masked:
+            real_image = real_image * mask
+
         return input_label, inst_map, real_image, feat_map
 
     def discriminate(self, input_label, test_image, use_pool=False):
@@ -149,9 +153,9 @@ class Pix2PixHDModel(BaseModel):
         else:
             return self.netD.forward(input_concat)
 
-    def forward(self, label, inst, image, feat, infer=False):
+    def forward(self, label, inst, image, feat, mask, infer=False):
         # Encode Inputs
-        input_label, inst_map, real_image, feat_map = self.encode_input(label, inst, image, feat)  
+        input_label, inst_map, real_image, feat_map = self.encode_input(label, inst, image, feat, mask)  
 
         # Fake Generation
         if self.use_features:
@@ -161,6 +165,10 @@ class Pix2PixHDModel(BaseModel):
         else:
             input_concat = input_label
         fake_image = self.netG.forward(input_concat)
+
+        # Apply mask to fake image
+        if self.opt.masked:
+            fake_image = fake_image * mask
 
         # Fake Detection and Loss
         pred_fake_pool = self.discriminate(input_label, fake_image, use_pool=True)
@@ -188,11 +196,13 @@ class Pix2PixHDModel(BaseModel):
         loss_G_VGG = 0
         if not self.opt.no_vgg_loss:
             loss_G_VGG = self.criterionVGG(fake_image, real_image) * self.opt.lambda_feat
+            if self.opt.masked:
+                loss_G_VGG = loss_G_VGG * mask
         
         # Only return the fake_B image if necessary to save BW
         return [ self.loss_filter( loss_G_GAN, loss_G_GAN_Feat, loss_G_VGG, loss_D_real, loss_D_fake ), None if not infer else fake_image ]
 
-    def inference(self, label, inst, image=None):
+    def inference(self, label, inst, mask, image=None):
         # Encode Inputs        
         image = Variable(image) if image is not None else None
         input_label, inst_map, real_image, _ = self.encode_input(Variable(label), Variable(inst), image, infer=True)
@@ -214,6 +224,9 @@ class Pix2PixHDModel(BaseModel):
                 fake_image = self.netG.forward(input_concat)
         else:
             fake_image = self.netG.forward(input_concat)
+
+        if self.opt.masked:
+            fake_image = fake_image * mask
         return fake_image
 
     def sample_features(self, inst): 
